@@ -1,0 +1,4 @@
+# Ignore models
+models/
+*.h5
+*.keras
