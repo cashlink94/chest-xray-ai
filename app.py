@@ -1,198 +1,198 @@
 import streamlit as st
 import numpy as np
-import tensorflow as tf
-from PIL import Image
-import pandas as pd
-import cv2
 from datetime import datetime
+from tensorflow.keras.models import load_model
+from PIL import Image
+import os
+import requests
 
-# -----------------------------
+# =========================
 # CONFIG
-# -----------------------------
+# =========================
 MODEL_PATH = "models/chest_xray_best.keras"
+MODEL_URL = "https://drive.google.com/uc?export=download&id=1_JaiQe7nDQszzJb4XGJc1x0d-fbnoJE2"
 IMG_SIZE = (224, 224)
 
-# -----------------------------
+st.set_page_config(page_title="Radiology AI", layout="centered")
+
+# =========================
+# DOWNLOAD MODEL
+# =========================
+def download_model():
+    if not os.path.exists(MODEL_PATH):
+        os.makedirs("models", exist_ok=True)
+
+        st.info("📥 Downloading AI model (first run only)...")
+
+        response = requests.get(MODEL_URL, stream=True)
+
+        with open(MODEL_PATH, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        st.success("✅ Model downloaded")
+
+# =========================
 # LOAD MODEL
-# -----------------------------
+# =========================
 @st.cache_resource
-def load_model():
-    return tf.keras.models.load_model(MODEL_PATH)
+def load_ai_model():
+    download_model()
 
-model = load_model()
+    try:
+        model = load_model(MODEL_PATH, compile=False)
+        return model
+    except Exception as e:
+        st.error(f"❌ Model failed to load: {e}")
+        st.stop()
 
-# -----------------------------
-# PAGE SETTINGS
-# -----------------------------
-st.set_page_config(
-    page_title="Chest X-Ray Analysis System",
-    page_icon="🫁",
-    layout="centered"
-)
+model = load_ai_model()
 
-# -----------------------------
-# HEADER
-# -----------------------------
-st.title("🫁 Chest X-Ray Analysis System")
-st.markdown(
-    "AI-assisted analysis for detecting signs of **Pneumonia** from chest X-ray images."
-)
-st.caption(f"Analysis Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-st.markdown("---")
+# =========================
+# PREPROCESS
+# =========================
+def preprocess_image(image):
+    image = image.convert("L")
+    image = image.resize(IMG_SIZE)
 
-# -----------------------------
-# UPLOAD
-# -----------------------------
+    img = np.array(image).astype("float32")
+    img = img / 255.0
+
+    # PACS-style normalization
+    img = (img - np.mean(img)) / (np.std(img) + 1e-6)
+
+    img = np.stack([img, img, img], axis=-1)
+    img = np.expand_dims(img, axis=0)
+
+    return img
+
+# =========================
+# PREDICT
+# =========================
+def predict(image):
+    try:
+        processed = preprocess_image(image)
+        prob = model.predict(processed, verbose=0)[0][0]
+
+        prob = float(prob)
+        prob = min(max(prob, 0.01), 0.99)
+
+        return prob
+    except Exception as e:
+        st.error(f"Prediction failed: {e}")
+        return 0.0
+
+# =========================
+# UI
+# =========================
+st.title("🫁 Radiology AI Analysis System")
+st.markdown("AI-assisted interpretation of chest X-ray images")
+
+# =========================
+# PATIENT INFO
+# =========================
+st.subheader("Patient Information")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    name = st.text_input("Name", "Anonymous")
+    patient_id = st.text_input("Patient ID", "XR-001")
+
+with col2:
+    age = st.number_input("Age", min_value=0, value=40)
+    gender = st.selectbox("Gender", ["Male", "Female"])
+
+# =========================
+# MODEL STATUS
+# =========================
+st.success("🟢 AI Model Loaded")
+
+# =========================
+# FILE UPLOAD
+# =========================
 uploaded_file = st.file_uploader(
-    "Upload Chest X-ray Image",
+    "Upload Chest X-ray",
     type=["jpg", "jpeg", "png"]
 )
 
-# -----------------------------
-# PREPROCESS
-# -----------------------------
-def preprocess_image(image):
-    image = image.resize(IMG_SIZE)
-    img = np.array(image) / 255.0
-    img = np.expand_dims(img, axis=0)
-    return img
-
-# -----------------------------
-# FIND CONV LAYER (FOR HEATMAP)
-# -----------------------------
-def find_last_conv_layer(model):
-    for layer in reversed(model.layers):
-        if isinstance(layer, tf.keras.layers.Conv2D):
-            return layer
-    return None
-
-# -----------------------------
-# MAIN
-# -----------------------------
+# =========================
+# ANALYSIS
+# =========================
 if uploaded_file is not None:
 
-    col1, col2 = st.columns(2)
-    image = Image.open(uploaded_file).convert("RGB")
+    image = Image.open(uploaded_file)
 
-    with col1:
-        st.image(image, caption="Input X-ray", use_container_width=True)
+    st.image(image, caption="Uploaded X-ray", width=400)
 
-    with st.spinner("Analyzing image..."):
-        processed = preprocess_image(image)
-        prediction = model.predict(processed)
+    st.markdown("### Imaging Data")
 
-    prob = float(prediction[0][0])
-    confidence = max(prob, 1 - prob)
+    prob = predict(image)
 
     # Risk logic
-    if prob >= 0.75:
-        risk = "High Risk"
-    elif prob >= 0.5:
-        risk = "Moderate Risk"
+    if prob > 0.75:
+        risk = "HIGH"
+        color = "🔴"
+    elif prob > 0.5:
+        risk = "MODERATE"
+        color = "🟠"
     else:
-        risk = "Low Risk"
+        risk = "LOW"
+        color = "🟢"
 
-    with col2:
-        st.subheader("Analysis Result")
+    # =========================
+    # RESULT
+    # =========================
+    st.markdown("## AI Analysis Result")
 
-        if prob >= 0.5:
-            st.error("🩺 Pneumonia Indicators Detected")
-        else:
-            st.success("✅ No Significant Pneumonia Indicators")
+    st.warning("Findings suggest radiographic features consistent with Pneumonia")
 
-        st.metric("Model Confidence", f"{confidence:.2%}")
-        st.metric("Risk Level", risk)
-        st.progress(int(confidence * 100))
+    st.markdown(f"### {color} {risk} PROBABILITY")
 
-        st.markdown("### Clinical Summary")
-        if prob >= 0.5:
-            st.write(
-                f"The model detected patterns consistent with pneumonia "
-                f"with a confidence of {prob:.2%}. Further clinical evaluation is recommended."
-            )
-        else:
-            st.write(
-                f"No strong indicators of pneumonia were detected "
-                f"(confidence {(1 - prob):.2%}). Correlate with clinical findings."
-            )
+    st.markdown("**Confidence Score**")
+    st.write(f"{prob*100:.2f}%")
 
-    # -----------------------------
-    # PROBABILITY CHART
-    # -----------------------------
-    st.markdown("---")
-    st.subheader("Prediction Probability Distribution")
+    st.markdown("**Pneumonia Probability**")
+    st.write(f"{prob*100:.2f}%")
 
-    chart = pd.DataFrame({
-        "Condition": ["Healthy", "Pneumonia"],
-        "Probability": [1 - prob, prob]
-    })
+    if prob < 0.5:
+        st.success("No significant radiographic evidence of Pneumonia detected")
 
-    st.bar_chart(chart.set_index("Condition"))
+    # =========================
+    # REPORT
+    # =========================
+    st.markdown("## Radiology Report")
 
-    st.write(f"Healthy Probability: {(1 - prob):.2%}")
-    st.write(f"Pneumonia Probability: {prob:.2%}")
+    st.write(f"Patient Name: {name}")
+    st.write(f"Patient ID: {patient_id}")
+    st.write(f"Age / Gender: {age} / {gender}")
 
-    # -----------------------------
-    # HEATMAP (SAFE + OPTIONAL)
-    # -----------------------------
-    st.markdown("---")
-    st.subheader("Model Attention (Grad-CAM)")
+    st.write("Study: Chest X-ray")
+    st.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    last_conv_layer = find_last_conv_layer(model)
+    st.markdown("### Findings")
+    st.write("AI-assisted analysis suggests features consistent with Pneumonia.")
 
-    if last_conv_layer is None:
-        st.info("ℹ️ Heatmap not available for this model architecture.")
-    else:
-        try:
-            grad_model = tf.keras.models.Model(
-                inputs=model.input,
-                outputs=[last_conv_layer.output, model.output]
-            )
+    st.markdown("### Impression")
+    st.write(f"Pneumonia Probability: {prob*100:.2f}%")
+    st.write(f"Confidence Level: {prob*100:.2f}%")
+    st.write(f"Risk Category: {risk}")
 
-            with tf.GradientTape() as tape:
-                conv_outputs, predictions = grad_model(processed)
-                loss = predictions[:, 0]
+    st.markdown("### Recommendation")
+    st.write(
+        "Clinical correlation is recommended. "
+        "Consider physician review and further diagnostic testing."
+    )
 
-            grads = tape.gradient(loss, conv_outputs)
-            pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    st.success("✔ Analysis Completed")
 
-            conv_outputs = conv_outputs[0]
-            heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-            heatmap = tf.squeeze(heatmap)
-
-            heatmap = np.maximum(heatmap, 0)
-
-            if np.max(heatmap) != 0:
-                heatmap /= np.max(heatmap)
-
-            heatmap = heatmap.numpy()
-
-            # Overlay
-            heatmap = cv2.resize(heatmap, (image.size[0], image.size[1]))
-            heatmap = np.uint8(255 * heatmap)
-            heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-
-            original = np.array(image)
-            overlay = heatmap * 0.4 + original
-
-            col3, col4 = st.columns(2)
-
-            with col3:
-                st.image(image, caption="Original X-ray", use_container_width=True)
-
-            with col4:
-                st.image(overlay.astype("uint8"), caption="Model Attention", use_container_width=True)
-
-        except Exception:
-            st.warning("⚠️ Unable to generate heatmap for this model.")
-
-# -----------------------------
-# FOOTER
-# -----------------------------
+# =========================
+# DISCLAIMER
+# =========================
 st.markdown("---")
-st.markdown("Built with TensorFlow + Streamlit")
-
-st.markdown(
-    "**Notice:** This AI system is for research and educational purposes only. "
-    "It is not a medical diagnostic tool. Always consult a qualified healthcare professional."
+st.warning(
+    "⚠️ This system is NOT a medical device. "
+    "It is for research and educational use only. "
+    "Clinical decisions must be made by qualified professionals."
 )
