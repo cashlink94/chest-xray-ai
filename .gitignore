@@ -1,2 +1,7 @@
 models/
+data/
+logs/
+outputs/
+*.h5
 *.keras
+*.png
